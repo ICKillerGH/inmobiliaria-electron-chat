@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Hello World!</title>
+    <!-- https://electronjs.org/docs/tutorial/security#csp-meta-tag -->
+    <!-- <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';" /> -->
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+  	<div class="bg-gray-50" id="app">
+		<div
+			class="flex min-h-screen items-center justify-center"
+			v-show="token === null"
+		>
+			<button
+				type="button"
+				class="block w-64 px-3 py-2 text-center text-white font-semibold bg-blue-500 rounded-md"
+				v-on:click="login"
+			>
+				Login
+			</button> 
+		</div>
+
+		<div
+			class="flex min-h-screen"
+			v-show="token"
+		>
+	  		<div class="w-1/2 flex flex-col">
+	  			<button
+					type="button"
+					class="block w-full my-2 px-3 py-2 text-center text-white font-semibold bg-blue-500 rounded-md"
+					v-on:click="loadData"
+				>
+					Load data
+				</button>
+	  			<div class="flex-1 divide-y divide-color-gray-400">
+	  				<span class="px-3 py-2 block bg-blue-600 text-white text-2xl text-center">Chats</span>
+					<div
+						class="w-full px-2 py-1 text-center bg-blue-500 cursor-pointer"
+						v-for="chat in chats" v-bind:key="chat.id"
+						v-on:click="selectedChat = chat"
+					>{{ chat.name }}</div>
+	  			</div>
+	  			<div class="flex-1 divide-y divide-color-gray-400">
+	  				<span class="px-3 py-2 block bg-blue-600 text-white text-2xl text-center">Inmobiliarias</span>
+					<div
+						class="w-full px-2 py-1 text-center bg-blue-500 cursor-pointer"
+						v-for="agency in agencies" v-bind:key="agency.id"
+						v-on:click="selectChatByUserId(agency)"
+					>
+						{{ agency.name }}
+					</div>
+	  			</div>
+	  		</div>
+	  		<div class="flex flex-col w-1/2 p-3 h-screen bg-green-300">
+	  			<template v-if="selectedChat">
+		  			<div class="flex-1 flex flex-col-reverse overflow-x-none overflow-y-auto bg-red-500 custom-scrollbar">
+						<div
+							class="mb-2 px-3 py-2"
+							v-for="message in selectedChat.messages" v-bind:key="message.id"
+							v-bind:class="message.user_id == user.id ? 'bg-green-500' : 'bg-indigo-500'"
+						>
+							Content: <span v-text="message.content"></span><br>
+							User id: <span v-text="message.user_id"></span><br>
+							Id: <span v-text="user.id"></span>
+						</div>
+					</div>
+					<form class="flex divide-x divide-color-gray-300" v-on:submit.prevent="sendMessage">
+						<input
+							type="text"
+							class="flex-1 px-3 py-2 focus:bg-gray-100 focus:outline-none"
+							v-model="message"
+						/>
+						<button type="submit" class="px-3 py-2 bg-white">Enviar</button>
+					</form>
+	  			</template>
+	  		</div>
+		</div>
+	</div>
+
+	<script src="./vue.js"></script>
+
+    <script>
+        const axios = require('axios');
+		axios.defaults.baseURL = 'http://inmobiliaria.test/api';
+
+    	window.Pusher = require('pusher-js');
+		const Echo = require('laravel-echo');
+		
+		new Vue({
+			el: '#app',
+			data: {
+				token: null,
+				user: null,
+				selectedChat: null,
+				message: '',
+				echo: null,
+				chats: [],
+				agencies: [],
+			},
+			watch: {
+				token(token) {
+					token && this.loadData();
+				},
+				async selectedChat(chat) {
+					if (chat === null) return;
+
+					if (chat.id === null) return;
+					
+					if (chat.fetched) return;
+
+					const { data: { data } } = await axios.get(`/chats/${chat.id}/messages`);
+
+					chat.messages.push(...data);
+					chat.fetched = true;
+				}
+			},
+			mounted(){
+				this.init();
+			},
+			methods: {
+				init() {
+					this.token = localStorage.getItem('token');
+
+					this.user = JSON.parse(localStorage.getItem('user'));
+
+					axios.defaults.headers.common['Authorization'] = `Bearer ${this.token}`;
+
+					this.token && this.loadData();
+
+					this.echo = this.echoInstance();
+
+					this.setupEcho();
+				},
+				echoInstance() {
+					return new Echo({
+						broadcaster: 'pusher',
+						key: 'appkey',
+						wsHost: 'inmobiliaria.test',
+						wsPort: 6001,
+						forceTLS: false,
+						disableStats: true,
+						authorizer: (channel, options) => {
+							return {
+								authorize: (socketId, callback) => {
+									axios.post('/broadcasting/auth', {
+										socket_id: socketId,
+										channel_name: channel.name
+									})
+									.then(response => {
+										callback(false, response.data);
+									})
+									.catch(error => {
+										callback(true, error);
+									});
+								}
+							};
+						},
+					});
+				},
+				setupEcho() {
+					this.echo.private('new-message.2')
+						.listen('NewMessage', message => {
+							const chat = this.chats.find(chat => chat.id == message.chat_id);
+
+							chat && chat.messages.unshift(message);
+						});
+				},
+				async login() {
+					const { data: { token, data } } = await axios.post('/login', {
+						email: 'client@gmail.com',
+						password: 'password',
+						device_name: 'electron'
+					});
+
+					axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+					this.user = data;
+					this.token = token;
+					localStorage.setItem('token', token);
+					localStorage.setItem('user', JSON.stringify(data));
+				},
+				getChats: () => axios.get('/chats'),
+				getAgencies: () => axios.get('/real-estate-agencies'),
+				async loadData() {
+					const [chats, agencies] = await Promise.all([this.getChats(), this.getAgencies()]);
+
+					this.chats = chats.data.data.map(chat => ({
+						...chat,
+						messages: [],
+						fetched: false,
+					}));
+
+					this.agencies = agencies.data.data;
+				},
+				async sendMessage() {
+					if (this.selectedChat === null || this.message === '') return;
+
+					if (this.selectedChat.id === null) {
+						return this.createChat();
+					}
+
+					this.sendMessageToSelectedChat();
+				},
+				async createChat() {
+					const { data: { data } } = await axios.post('/chats', {
+						content: this.message,
+						recipient_id: this.selectedChat.recipientId
+					});
+
+					this.selectedChat = {
+						...data,
+						fetched: true,
+					};
+
+					this.chats.unshift(this.selectedChat);
+
+					this.message = '';
+				},
+				async sendMessageToSelectedChat() {
+					const { data: { data } } = await axios.post(`/chats/${this.selectedChat.id}/messages`, {
+						content: this.message,
+					});
+					return;
+
+					this.selectedChat.messages.unshift(data);
+
+					this.message = '';
+				},
+				selectChatByUserId(agency) {
+					this.selectedChat = this.chats.find(chat => chat.type === 'private' && chat.userIds.includes(agency.user_id)) ?? {
+						id: null,
+						name: agency.name,
+						messages: [],
+						fetched: false,
+						recipientId: agency.user_id
+					};
+				}
+			}
+		});
+    </script>
+  </body>
+</html>
